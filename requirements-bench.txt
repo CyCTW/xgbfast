@@ -1,0 +1,7 @@
+# Match the versions used in the local comparison; Python 3.12 is recommended.
+numpy==2.5.3
+scikit-learn==1.9.1
+xgboost==3.4.1
+treelite==4.7.2
+tl2cgen==1.0.0
+threadpoolctl==3.6.0

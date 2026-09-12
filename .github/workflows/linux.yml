@@ -1,0 +1,37 @@
+name: xgbfast native Linux validation
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install compiler and packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake git ca-certificates libgomp1
+          python scripts/install_bench.py
+          python -m pip install .
+      - name: Validate native build, runtime and prediction parity
+        run: python scripts/validate_linux.py --output results/linux-ci
+      - name: Preserve reports (CI timing is not a production latency guarantee)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xgbfast-${{ matrix.runner }}
+          path: results/linux-ci/

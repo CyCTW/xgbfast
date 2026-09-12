@@ -1,0 +1,12 @@
+__pycache__/
+*.egg-info/
+dist/
+build/
+artifacts/
+compiled/
+results/
+.venv*/
+*.so
+*.dylib
+*.o
+.DS_Store
