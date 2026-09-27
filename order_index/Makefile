@@ -8,19 +8,19 @@ all: example fuzz_side_index fuzz_order_side bench_side_index
 example: example.cpp side_index.hpp order_side.hpp
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
-fuzz_side_index: fuzz_side_index.cpp side_index.hpp
+fuzz_side_index: fuzz_side_index.cpp side_index.hpp back_sorted_index.hpp
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
-fuzz_side_index_san: fuzz_side_index.cpp side_index.hpp
+fuzz_side_index_san: fuzz_side_index.cpp side_index.hpp back_sorted_index.hpp
 	$(CXX) $(SANFLAGS) -o $@ $<
 
-fuzz_order_side: fuzz_order_side.cpp side_index.hpp order_side.hpp
+fuzz_order_side: fuzz_order_side.cpp side_index.hpp back_sorted_index.hpp order_side.hpp
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
-fuzz_order_side_san: fuzz_order_side.cpp side_index.hpp order_side.hpp
+fuzz_order_side_san: fuzz_order_side.cpp side_index.hpp back_sorted_index.hpp order_side.hpp
 	$(CXX) $(SANFLAGS) -o $@ $<
 
-bench_side_index: bench_side_index.cpp side_index.hpp
+bench_side_index: bench_side_index.cpp side_index.hpp back_sorted_index.hpp
 	$(CXX) $(CXXFLAGS) -O3 -march=native -DNDEBUG -o $@ $<
 
 test: fuzz_side_index fuzz_order_side

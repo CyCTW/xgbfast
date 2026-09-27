@@ -26,10 +26,13 @@ struct OrderNode {
   bool live = false;
 };
 
-template <Side S, uint32_t LevelCap = 256, uint32_t OrderCap = 4096, uint32_t MaxEmpty = 8>
+// IndexT：價位索引的實作，預設 SideIndex（雙端），也可換成 BackSortedIndex（單端）等
+// 具有相同 API 的類別。
+template <Side S, uint32_t LevelCap = 256, uint32_t OrderCap = 4096, uint32_t MaxEmpty = 8,
+          template <Side, uint32_t, uint32_t> class IndexT = SideIndex>
 class OrderSide {
  public:
-  using Index = SideIndex<S, LevelCap, MaxEmpty>;
+  using Index = IndexT<S, LevelCap, MaxEmpty>;
 
   OrderSide() {
     for (uint32_t i = 0; i < OrderCap; ++i) orders_[i].next = (i + 1 < OrderCap) ? i + 1 : kInvalid;

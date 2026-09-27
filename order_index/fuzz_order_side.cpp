@@ -10,6 +10,7 @@
 //   * mid 跳空、空閒時主動回收空價位
 //
 // 用法：fuzz_order_side [iterations_per_seed] [num_seeds] [start_seed]
+#include "back_sorted_index.hpp"
 #include "order_side.hpp"
 
 #include <algorithm>
@@ -44,7 +45,7 @@ struct RefOrder {
   int64_t leaves;
 };
 
-template <Side S, uint32_t LevelCap, uint32_t OrderCap, uint32_t MaxEmpty>
+template <template <Side, uint32_t, uint32_t> class IndexT, Side S, uint32_t LevelCap, uint32_t OrderCap, uint32_t MaxEmpty>
 class Harness {
  public:
   explicit Harness(uint64_t seed) : rng_(seed), seed_(seed) {}
@@ -64,7 +65,7 @@ class Harness {
   }
 
  private:
-  using Book = OrderSide<S, LevelCap, OrderCap, MaxEmpty>;
+  using Book = OrderSide<S, LevelCap, OrderCap, MaxEmpty, IndexT>;
   static constexpr bool kBuy = (S == Side::Buy);
 
   int64_t pick(int64_t lo, int64_t hi) { return std::uniform_int_distribution<int64_t>(lo, hi)(rng_); }
@@ -326,11 +327,11 @@ class Harness {
   std::vector<uint32_t> extremes_;
 };
 
-template <Side S, uint32_t LevelCap, uint32_t OrderCap, uint32_t MaxEmpty>
+template <template <Side, uint32_t, uint32_t> class IndexT, Side S, uint32_t LevelCap, uint32_t OrderCap, uint32_t MaxEmpty>
 bool runConfig(const char* name, uint64_t iters, uint64_t seeds, uint64_t startSeed) {
-  typename Harness<S, LevelCap, OrderCap, MaxEmpty>::Stats t{};
+  typename Harness<IndexT, S, LevelCap, OrderCap, MaxEmpty>::Stats t{};
   for (uint64_t s = startSeed; s < startSeed + seeds; ++s) {
-    auto h = std::make_unique<Harness<S, LevelCap, OrderCap, MaxEmpty>>(s);
+    auto h = std::make_unique<Harness<IndexT, S, LevelCap, OrderCap, MaxEmpty>>(s);
     if (!h->run(iters)) {
       std::fprintf(stderr, "[%s] FAILED at seed %llu\n", name, (unsigned long long)s);
       return false;
@@ -343,7 +344,7 @@ bool runConfig(const char* name, uint64_t iters, uint64_t seeds, uint64_t startS
     t.maxLevels = std::max(t.maxLevels, x.maxLevels);
     t.maxOrders = std::max(t.maxOrders, x.maxOrders);
   }
-  std::printf("[%-16s] ok  adds=%llu fills=%llu partial=%llu cancel=%llu qty-/+=%llu/%llu replace=%llu "
+  std::printf("[%-21s] ok  adds=%llu fills=%llu partial=%llu cancel=%llu qty-/+=%llu/%llu replace=%llu "
               "rejects(add=%llu repl=%llu) repl-freed-slot=%llu maxLevels=%u maxOrders=%u\n",
               name, (unsigned long long)t.adds, (unsigned long long)t.fills, (unsigned long long)t.partials,
               (unsigned long long)t.cancels, (unsigned long long)t.qtyDown, (unsigned long long)t.qtyUp,
@@ -353,10 +354,11 @@ bool runConfig(const char* name, uint64_t iters, uint64_t seeds, uint64_t startS
   return true;
 }
 
-bool directedTests() {
+template <template <Side, uint32_t, uint32_t> class IndexT>
+bool directedTests(const char* name) {
   // 1. FIFO 與排隊位置規則
   {
-    OrderSide<Side::Buy, 16, 64, 4> b;
+    OrderSide<Side::Buy, 16, 64, 4, IndexT> b;
     const uint32_t a = b.add(1, 100, 10);
     const uint32_t c = b.add(2, 100, 20);
     const uint32_t d = b.add(3, 100, 30);
@@ -371,7 +373,7 @@ bool directedTests() {
   }
   // 2. 改價到極端價位（積極回補）：handle 不變、成為新的最佳價
   {
-    OrderSide<Side::Buy, 16, 64, 4> b;
+    OrderSide<Side::Buy, 16, 64, 4, IndexT> b;
     const uint32_t a = b.add(1, 100, 10);
     b.add(2, 99, 10);
     CHECK(b.replace(a, 1'000'000, 3), "replace to aggressive");
@@ -381,7 +383,7 @@ bool directedTests() {
   }
   // 3. 價位容量全滿時改價：舊價位只剩這張單 → 成功；否則拒絕且狀態不變
   {
-    OrderSide<Side::Sell, 4, 64, 2> a;
+    OrderSide<Side::Sell, 4, 64, 2, IndexT> a;
     const uint32_t h1 = a.add(1, 100, 1);
     const uint32_t h2 = a.add(2, 101, 1);
     a.add(3, 101, 1);
@@ -395,12 +397,12 @@ bool directedTests() {
   }
   // 4. 訂單池滿
   {
-    OrderSide<Side::Buy, 8, 4, 2> b;
+    OrderSide<Side::Buy, 8, 4, 2, IndexT> b;
     for (int i = 0; i < 4; ++i) CHECK(b.add(i, 100 + i, 1) != kInvalid, "fill pool");
     CHECK(b.add(9, 100, 1) == kInvalid, "pool full rejects");
     CHECK(b.checkInvariants(), "invariants");
   }
-  std::printf("[%-16s] ok\n", "directed");
+  std::printf("[directed %-12s] ok\n", name);
   return true;
 }
 
@@ -411,17 +413,24 @@ int main(int argc, char** argv) {
   const uint64_t seeds = argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 30;
   const uint64_t start = argc > 3 ? std::strtoull(argv[3], nullptr, 10) : 1;
 
-  bool ok = directedTests();
+  bool ok = directedTests<SideIndex>("de") && directedTests<BackSortedIndex>("back");
   // 價位與訂單容量都很小：頻繁撞到兩種容量上限
-  ok = ok && runConfig<Side::Buy, 8, 24, 0>("buy/L8/O24/e0", iters, seeds, start);
-  ok = ok && runConfig<Side::Sell, 8, 24, 3>("sell/L8/O24/e3", iters, seeds, start);
+  ok = ok && runConfig<SideIndex, Side::Buy, 8, 24, 0>("de/buy/L8/O24/e0", iters, seeds, start);
+  ok = ok && runConfig<SideIndex, Side::Sell, 8, 24, 3>("de/sell/L8/O24/e3", iters, seeds, start);
   // 訂單池是瓶頸
-  ok = ok && runConfig<Side::Sell, 64, 12, 4>("sell/L64/O12/e4", iters, seeds, start);
+  ok = ok && runConfig<SideIndex, Side::Sell, 64, 12, 4>("de/sell/L64/O12/e4", iters, seeds, start);
   // 價位容量是瓶頸（訂單多、價位少）
-  ok = ok && runConfig<Side::Buy, 16, 256, 4>("buy/L16/O256/e4", iters, seeds, start);
+  ok = ok && runConfig<SideIndex, Side::Buy, 16, 256, 4>("de/buy/L16/O256/e4", iters, seeds, start);
   // 一般容量
-  ok = ok && runConfig<Side::Sell, 64, 128, 8>("sell/L64/O128/e8", iters, seeds, start);
-  ok = ok && runConfig<Side::Buy, 256, 512, 16>("buy/L256/O512", iters, seeds, start);
+  ok = ok && runConfig<SideIndex, Side::Sell, 64, 128, 8>("de/sell/L64/O128/e8", iters, seeds, start);
+  ok = ok && runConfig<SideIndex, Side::Buy, 256, 512, 16>("de/buy/L256/O512", iters, seeds, start);
+  // 原方案一（單端排序陣列），同樣的組態
+  ok = ok && runConfig<BackSortedIndex, Side::Buy, 8, 24, 0>("back/buy/L8/O24/e0", iters, seeds, start);
+  ok = ok && runConfig<BackSortedIndex, Side::Sell, 8, 24, 3>("back/sell/L8/O24/e3", iters, seeds, start);
+  ok = ok && runConfig<BackSortedIndex, Side::Sell, 64, 12, 4>("back/sell/L64/O12/e4", iters, seeds, start);
+  ok = ok && runConfig<BackSortedIndex, Side::Buy, 16, 256, 4>("back/buy/L16/O256/e4", iters, seeds, start);
+  ok = ok && runConfig<BackSortedIndex, Side::Sell, 64, 128, 8>("back/sell/L64/O128/e8", iters, seeds, start);
+  ok = ok && runConfig<BackSortedIndex, Side::Buy, 256, 512, 16>("back/buy/L256/O512", iters, seeds, start);
 
   if (!ok || g_failures) {
     std::printf("FAILED (%d failures)\n", g_failures);

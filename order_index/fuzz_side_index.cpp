@@ -8,6 +8,7 @@
 //   * 偶爾 mid 跳空大幅移動
 //
 // 用法：fuzz_side_index [iterations_per_seed] [num_seeds] [start_seed]
+#include "back_sorted_index.hpp"
 #include "side_index.hpp"
 
 #include <algorithm>
@@ -42,7 +43,7 @@ int g_failures = 0;
     }                                                                     \
   } while (0)
 
-template <Side S, uint32_t Cap, uint32_t MaxEmpty>
+template <template <Side, uint32_t, uint32_t> class IndexT, Side S, uint32_t Cap, uint32_t MaxEmpty>
 class Harness {
  public:
   explicit Harness(uint64_t seed) : rng_(seed), seed_(seed) {}
@@ -63,7 +64,7 @@ class Harness {
   } stats_;
 
  private:
-  using Index = SideIndex<S, Cap, MaxEmpty>;
+  using Index = IndexT<S, Cap, MaxEmpty>;
   static constexpr bool kBuy = (S == Side::Buy);
 
   // 買方的積極價在上方，賣方的積極價在下方
@@ -211,11 +212,11 @@ class Harness {
   uint32_t maxSize_ = 0;
 };
 
-template <Side S, uint32_t Cap, uint32_t MaxEmpty>
+template <template <Side, uint32_t, uint32_t> class IndexT, Side S, uint32_t Cap, uint32_t MaxEmpty>
 bool runConfig(const char* name, uint64_t iters, uint64_t seeds, uint64_t startSeed) {
-  typename Harness<S, Cap, MaxEmpty>::Stats total{};
+  typename Harness<IndexT, S, Cap, MaxEmpty>::Stats total{};
   for (uint64_t s = startSeed; s < startSeed + seeds; ++s) {
-    auto h = std::make_unique<Harness<S, Cap, MaxEmpty>>(s);  // 物件較大，放 heap
+    auto h = std::make_unique<Harness<IndexT, S, Cap, MaxEmpty>>(s);  // 物件較大，放 heap
     if (!h->run(iters)) {
       std::fprintf(stderr, "[%s] FAILED at seed %llu\n", name, (unsigned long long)s);
       return false;
@@ -229,7 +230,7 @@ bool runConfig(const char* name, uint64_t iters, uint64_t seeds, uint64_t startS
     total.jumps += h->stats_.jumps;
     if (h->stats_.maxSize > total.maxSize) total.maxSize = h->stats_.maxSize;
   }
-  std::printf("[%-12s] ok  adds=%llu (aggr=%llu deep=%llu) reduces=%llu removes=%llu full-rejects=%llu jumps=%llu maxLevels=%u\n",
+  std::printf("[%-17s] ok  adds=%llu (aggr=%llu deep=%llu) reduces=%llu removes=%llu full-rejects=%llu jumps=%llu maxLevels=%u\n",
               name, (unsigned long long)total.adds, (unsigned long long)total.aggressive,
               (unsigned long long)total.deepPassive, (unsigned long long)total.reduces,
               (unsigned long long)total.removes, (unsigned long long)total.full,
@@ -237,11 +238,12 @@ bool runConfig(const char* name, uint64_t iters, uint64_t seeds, uint64_t startS
   return true;
 }
 
-// 針對邊界情況的確定性測試
-bool directedTests() {
+// 針對邊界情況的確定性測試（與陣列配置無關，兩種實作都跑）
+template <template <Side, uint32_t, uint32_t> class IndexT>
+bool directedCommon(const char* name) {
   // 1. 積極價應立即成為最佳價；刪掉後最佳價恢復
   {
-    SideIndex<Side::Buy, 16> b;
+    IndexT<Side::Buy, 16, 8> b;
     for (int64_t p = 100; p < 105; ++p) b.addOrder(p, 1);
     b.addOrder(1'000'000, 5);  // 積極回補
     CHECK(b.bestPx() == 1'000'000, "aggressive best");
@@ -251,9 +253,9 @@ bool directedTests() {
     CHECK(b.bestPx() == 104, "best restored");
     CHECK(b.checkInvariants(), "invariants");
   }
-  // 2. 單邊持續 push（只往最佳端加）要能觸發 recenter 並填滿整個容量
+  // 2. 單邊持續 push（只往最佳端加）要能填滿整個容量
   {
-    SideIndex<Side::Sell, 8, 2> a;
+    IndexT<Side::Sell, 8, 2> a;
     for (int64_t p = 100; p > 92; --p) CHECK(a.addOrder(p, 1) != kInvalid, "sell push best p=%lld", (long long)p);
     CHECK(a.size() == 8 && a.bestPx() == 93 && a.worstPx() == 100, "sell full");
     CHECK(a.addOrder(50, 1) == kInvalid, "full must reject new level");
@@ -262,21 +264,14 @@ bool directedTests() {
   }
   // 3. 只往最差端加
   {
-    SideIndex<Side::Buy, 8, 2> b;
+    IndexT<Side::Buy, 8, 2> b;
     for (int64_t p = 100; p > 92; --p) CHECK(b.addOrder(p, 1) != kInvalid, "buy push worst p=%lld", (long long)p);
     CHECK(b.bestPx() == 100 && b.worstPx() == 93, "buy worst order");
     CHECK(b.checkInvariants(), "invariants");
   }
-  // 4. 清空後回到中間
-  {
-    SideIndex<Side::Buy, 8, 2> b;
-    b.addOrder(10, 1);
-    b.reduce(10, 1, true);
-    CHECK(b.empty() && b.headPos() == 4 && b.tailPos() == 4, "reset to center");
-  }
   // 5. 延遲回收：內部價位清空時保留，兩端清空時連同相鄰空價位一起回收
   {
-    SideIndex<Side::Buy, 16, 8> b;
+    IndexT<Side::Buy, 16, 8> b;
     for (int64_t p = 100; p <= 104; ++p) b.addOrder(p, 1);
     b.reduce(101, 1, true);
     b.reduce(102, 1, true);
@@ -294,7 +289,7 @@ bool directedTests() {
   }
   // 6. 超過 MaxEmpty 時自動壓縮
   {
-    SideIndex<Side::Sell, 16, 2> a;
+    IndexT<Side::Sell, 16, 2> a;
     for (int64_t p = 100; p <= 106; ++p) a.addOrder(p, 1);
     a.reduce(101, 1, true);
     a.reduce(102, 1, true);
@@ -305,7 +300,7 @@ bool directedTests() {
   }
   // 7. 容量滿但有空價位時，新價位仍可插入（先壓縮）
   {
-    SideIndex<Side::Buy, 8, 4> b;
+    IndexT<Side::Buy, 8, 4> b;
     for (int64_t p = 100; p < 108; ++p) b.addOrder(p, 1);
     b.reduce(103, 1, true);
     CHECK(b.slots() == 8 && b.size() == 7, "full with one empty");
@@ -317,7 +312,20 @@ bool directedTests() {
     CHECK(b.addOrder(104, 1) == kInvalid, "truly full rejects");
     CHECK(b.checkInvariants(), "invariants");
   }
-  std::printf("[directed    ] ok\n");
+  std::printf("[directed %-8s ] ok\n", name);
+  return true;
+}
+
+// 雙端陣列特有：清空後回到中間
+bool directedDoubleEnded() {
+  // 4. 清空後回到中間
+  {
+    SideIndex<Side::Buy, 8, 2> b;
+    b.addOrder(10, 1);
+    b.reduce(10, 1, true);
+    CHECK(b.empty() && b.headPos() == 4 && b.tailPos() == 4, "reset to center");
+  }
+  std::printf("[directed de-only ] ok\n");
   return true;
 }
 
@@ -328,17 +336,25 @@ int main(int argc, char** argv) {
   const uint64_t seeds = argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 50;
   const uint64_t start = argc > 3 ? std::strtoull(argv[3], nullptr, 10) : 1;
 
-  bool ok = directedTests();
+  bool ok = directedCommon<SideIndex>("de") && directedCommon<BackSortedIndex>("back") && directedDoubleEnded();
   // 小容量：頻繁撞到兩端與容量上限，測 recenter 與拒單路徑
-  ok = ok && runConfig<Side::Buy, 8, 0>("buy/8/e0", iters, seeds, start);
-  ok = ok && runConfig<Side::Buy, 8, 3>("buy/8/e3", iters, seeds, start);
-  ok = ok && runConfig<Side::Sell, 8, 3>("sell/8/e3", iters, seeds, start);
+  ok = ok && runConfig<SideIndex, Side::Buy, 8, 0>("de/buy/8/e0", iters, seeds, start);
+  ok = ok && runConfig<SideIndex, Side::Buy, 8, 3>("de/buy/8/e3", iters, seeds, start);
+  ok = ok && runConfig<SideIndex, Side::Sell, 8, 3>("de/sell/8/e3", iters, seeds, start);
   // 中容量：線性掃描與二分搜尋切換點附近（kLinearScanMax = 32）
-  ok = ok && runConfig<Side::Buy, 48, 8>("buy/48/e8", iters, seeds, start);
-  ok = ok && runConfig<Side::Sell, 48, 8>("sell/48/e8", iters, seeds, start);
+  ok = ok && runConfig<SideIndex, Side::Buy, 48, 8>("de/buy/48/e8", iters, seeds, start);
+  ok = ok && runConfig<SideIndex, Side::Sell, 48, 8>("de/sell/48/e8", iters, seeds, start);
   // 正式容量
-  ok = ok && runConfig<Side::Buy, 256, 8>("buy/256/e8", iters, seeds, start);
-  ok = ok && runConfig<Side::Sell, 256, 32>("sell/256/e32", iters, seeds, start);
+  ok = ok && runConfig<SideIndex, Side::Buy, 256, 8>("de/buy/256/e8", iters, seeds, start);
+  ok = ok && runConfig<SideIndex, Side::Sell, 256, 32>("de/sell/256/e32", iters, seeds, start);
+  // 原方案一（單端排序陣列），同樣的組態
+  ok = ok && runConfig<BackSortedIndex, Side::Buy, 8, 0>("back/buy/8/e0", iters, seeds, start);
+  ok = ok && runConfig<BackSortedIndex, Side::Buy, 8, 3>("back/buy/8/e3", iters, seeds, start);
+  ok = ok && runConfig<BackSortedIndex, Side::Sell, 8, 3>("back/sell/8/e3", iters, seeds, start);
+  ok = ok && runConfig<BackSortedIndex, Side::Buy, 48, 8>("back/buy/48/e8", iters, seeds, start);
+  ok = ok && runConfig<BackSortedIndex, Side::Sell, 48, 8>("back/sell/48/e8", iters, seeds, start);
+  ok = ok && runConfig<BackSortedIndex, Side::Buy, 256, 8>("back/buy/256/e8", iters, seeds, start);
+  ok = ok && runConfig<BackSortedIndex, Side::Sell, 256, 32>("back/sell/256/e32", iters, seeds, start);
 
   if (!ok || g_failures) {
     std::printf("FAILED (%d failures)\n", g_failures);
