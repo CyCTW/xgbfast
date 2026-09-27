@@ -1,5 +1,5 @@
 // SideIndex 使用範例：一般掛單 + 積極回補 + 遠端被動單。
-#include "side_index.hpp"
+#include "order_side.hpp"
 
 #include <cstdio>
 
@@ -40,5 +40,29 @@ int main() {
   bids.reduce(12000, 6, /*removeOrder=*/true);  // 價位清空後自動移除
   dump("積極單成交並刪除後", bids);
   std::printf("best=%lld\n", (long long)bids.bestPx());
+
+  // ---- OrderSide：價位 + 每個價位的 FIFO 訂單佇列 ----
+  OrderSide<Side::Sell> asks;
+  const uint32_t a1 = asks.add(/*clOrdId=*/101, 10005, 10);
+  const uint32_t a2 = asks.add(102, 10005, 20);
+  const uint32_t a3 = asks.add(103, 10006, 5);
+  std::printf("\n賣方最佳價=%lld 隊首=%llu，a2 前方量=%lld\n", (long long)asks.bestPx(),
+              (unsigned long long)asks.order(asks.bestFront()).clOrdId, (long long)asks.qtyAhead(a2));
+
+  asks.reduce(a1, 4);       // 部分成交：保留排隊位置
+  asks.modifyQty(a1, 30);   // 加量：排到隊尾
+  std::printf("a1 加量後 10005 的排隊順序:");
+  asks.forEachOrderAt(10005, [](uint32_t, const OrderNode& o) {
+    std::printf(" #%llu(%lld)", (unsigned long long)o.clOrdId, (long long)o.leaves);
+    return true;
+  });
+  std::printf("\n");
+
+  // 回補：a3 改價到很低的積極賣價，handle 不變
+  asks.replace(a3, 9000, 5);
+  std::printf("a3 改價後 best=%lld 隊首=%llu\n", (long long)asks.bestPx(),
+              (unsigned long long)asks.order(asks.bestFront()).clOrdId);
+  asks.remove(a3);  // 成交完畢或刪單
+  std::printf("a3 移除後 best=%lld，空價位保留數=%u\n", (long long)asks.bestPx(), asks.index().emptyCount());
   return 0;
 }

@@ -67,7 +67,7 @@ int main() {
       auto idx = std::make_unique<SideIndex<Side::Buy, 1024>>();
       for (const Op& o : ops) {
         if (o.add) {
-          if (!idx->addOrder(o.px, o.qty)) std::abort();  // 工作負載不應超過容量
+          if (idx->addOrder(o.px, o.qty) == kInvalid) std::abort();  // 工作負載不應超過容量
         } else {
           idx->reduce(o.px, o.qty, true);
         }
